@@ -1,0 +1,229 @@
+import sqlite3
+import os
+
+DB_NAME = "expenses.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON;")
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            amount REAL NOT NULL,
+            category_id INTEGER NOT NULL,
+            description TEXT,
+            FOREIGN KEY (category_id) REFERENCES categories(id)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS budgets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            month TEXT NOT NULL,
+            category_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            FOREIGN KEY (category_id) REFERENCES categories(id),
+            UNIQUE(month, category_id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def modulo_gestione_categorie():
+    print("\n--- MODULO 1: GESTIONE CATEGORIE ---")
+    nome = input("Inserisci il nome della categoria: ").strip()
+    if not nome:
+        print("Errore: Il nome non puo essere vuoto.")
+        return
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id FROM categories WHERE name = ?", (nome,))
+        if cursor.fetchone():
+            print("Errore: La categoria esiste gia.")
+        else:
+            cursor.execute("INSERT INTO categories (name) VALUES (?)", (nome,))
+            conn.commit()
+            print("Successo: Categoria inserita correttamente.")
+    except Exception as e:
+        print("Errore:", e)
+    finally:
+        conn.close()
+
+def modulo_inserisci_spesa():
+    print("\n--- MODULO 2: INSERIMENTO DI UNA SPESA ---")
+    data = input("Inserisci la data (YYYY-MM-DD): ").strip()
+    try:
+        importo = float(input("Inserisci l importo: "))
+    except ValueError:
+        print("Errore: Importo non valido.")
+        return
+    
+    if importo <= 0:
+        print("Errore: L importo deve essere maggiore di zero.")
+        return
+        
+    categoria = input("Nome della categoria: ").strip()
+    descrizione = input("Descrizione facoltativa: ").strip()
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id FROM categories WHERE name = ?", (categoria,))
+    cat_row = cursor.fetchone()
+    if not cat_row:
+        print("Errore: La categoria non esiste.")
+        conn.close()
+        return
+        
+    cat_id = cat_row[0]
+    cursor.execute("INSERT INTO expenses (date, amount, category_id, description) VALUES (?, ?, ?, ?)",
+                   (data, importo, cat_id, descrizione))
+    conn.commit()
+    conn.close()
+    print("Successo: Spesa inserita correttamente.")
+
+def modulo_budget_mensile():
+    print("\n--- MODULO 3: DEFINIZIONE BUDGET MENSILE ---")
+    mese = input("Inserisci il mese (YYYY-MM): ").strip()
+    categoria = input("Nome della categoria: ").strip()
+    try:
+        importo = float(input("Importo del budget: "))
+    except ValueError:
+        print("Errore: Importo non valido.")
+        return
+        
+    if importo <= 0:
+        print("Errore: Il budget deve essere maggiore di zero.")
+        return
+        
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id FROM categories WHERE name = ?", (categoria,))
+    cat_row = cursor.fetchone()
+    if not cat_row:
+        print("Errore: La categoria non esiste.")
+        conn.close()
+        return
+    cat_id = cat_row[0]
+    
+    cursor.execute("SELECT id FROM budgets WHERE month = ? AND category_id = ?", (mese, cat_id))
+    if cursor.fetchone():
+        cursor.execute("UPDATE budgets SET amount = ? WHERE month = ? AND category_id = ?", (importo, mese, cat_id))
+    else:
+        cursor.execute("INSERT INTO budgets (month, category_id, amount) VALUES (?, ?, ?)", (mese, cat_id, importo))
+        
+    conn.commit()
+    conn.close()
+    print("Output: Budget mensile salvato correttamente.")
+
+def modulo_visualizza_report():
+    while True:
+        print("\n--- MENU DEI REPORT ---")
+        print("1. Totale spese per categoria")
+        print("2. Spese mensili vs budget")
+        print("3. Elenco completo delle spese ordinate per data")
+        print("4. Ritorna al menu principale")
+        scelta = input("Inserisci la tua scelta: ").strip()
+        
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        if scelta == '1':
+            print("\n----------------------------------------")
+            print("Categoria       | Totale Speso")
+            print("----------------------------------------")
+            cursor.execute('''
+                SELECT c.name, SUM(e.amount) 
+                FROM expenses e JOIN categories c ON e.category_id = c.id 
+                GROUP BY c.name
+            ''')
+            for row in cursor.fetchall():
+                print(row[0], " | ", row[1])
+            print("----------------------------------------")
+            
+        elif scelta == '2':
+            print("\n--- REPORT: SPESE MENSILI VS BUDGET ---")
+            mese = input("Inserisci il mese da controllare (YYYY-MM): ").strip()
+            cursor.execute('''
+                SELECT c.name, b.amount, COALESCE(SUM(e.amount), 0) 
+                FROM budgets b 
+                JOIN categories c ON b.category_id = c.id 
+                LEFT JOIN expenses e ON e.category_id = c.id AND e.date LIKE ?
+                WHERE b.month = ?
+                GROUP BY c.name
+            ''', (mese + '%', mese))
+            rows = cursor.fetchall()
+            if not rows:
+                print("Nessun budget trovato per questo mese.")
+            for row in rows:
+                cat_name, budget_val, speso_val = row[0], row[1], row[2]
+                print("\nMese:", mese)
+                print("Categoria:", cat_name)
+                print("Budget:", budget_val)
+                print("Speso:", speso_val)
+                if speso_val > budget_val:
+                    print("Stato: SUPERAMENTO BUDGET")
+                else:
+                    print("Stato: NELLA NORMA")
+                    
+        elif scelta == '3':
+            print("\n--------------------------------------------------")
+            print("Data       | Categoria       | Importo  | Descrizione")
+            print("--------------------------------------------------")
+            cursor.execute('''
+                SELECT e.date, c.name, e.amount, e.description 
+                FROM expenses e JOIN categories c ON e.category_id = c.id 
+                ORDER BY e.date ASC
+            ''')
+            for row in cursor.fetchall():
+                print(row[0], " |", row[1], " |", row[2], " |", row[3])
+            print("--------------------------------------------------")
+            
+        elif scelta == '4':
+            conn.close()
+            break
+        else:
+            print("Scelta non valida. Riprovare.")
+        conn.close()
+
+def main():
+    init_db()
+    print("Benvenuto nel Sistema di Gestione delle Spese!")
+    while True:
+        print("\n==============================")
+        print("    SISTEMA SPESE PERSONALI   ")
+        print("==============================")
+        print("1. Gestione Categorie")
+        print("2. Inserisci Spesa")
+        print("3. Definisci Budget Mensile")
+        print("4. Visualizza Report")
+        print("5. Esci")
+        scelta = input("Inserisci la tua scelta: ").strip()
+        
+        if scelta == '1':
+            modulo_gestione_categorie()
+        elif scelta == '2':
+            modulo_inserisci_spesa()
+        elif scelta == '3':
+            modulo_budget_mensile()
+        elif scelta == '4':
+            modulo_visualizza_report()
+        elif scelta == '5':
+            print("Uscita dal programma. Arrivederci!")
+            break
+        else:
+            print("Scelta non valida. Riprovare.")
+
+if __name__ == "__main__":
+    main()
